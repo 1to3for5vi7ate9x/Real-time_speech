@@ -90,11 +90,10 @@ export async function POST(request: NextRequest) {
       language: language, // Ensure this matches Cartesia's expected language codes
       outputFormat: {
         container: 'raw',
-        encoding: 'pcm_f32le', // Using float32 for highest quality
-        sampleRate: 48000,     // Higher sample rate for better clarity
+        encoding: 'pcm_f32le',
+        sampleRate: 44100,
       },
-      // Using the speed parameter for better quality
-      speed: 'slow'           // Slightly slower for better clarity ('very_slow', 'slow', 'normal', 'fast', 'very_fast')
+      speed: 'normal'
     });
 
     // The ttsStream is an AsyncIterable<CartesiaSSEChunk (or similar)>. Convert to ReadableStream<Uint8Array>.
@@ -104,7 +103,7 @@ export async function POST(request: NextRequest) {
     // Set appropriate headers for streaming audio.
     return new Response(responseStream, {
       headers: {
-        'Content-Type': 'audio/pcm; codecs=pcm_f32le; sampleRate=44100', // Be precise with your audio format
+        'Content-Type': 'audio/pcm; codecs=pcm_f32le; sampleRate=44100',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
         // SSE would typically use 'text/event-stream', but since Cartesia SDK gives us Uint8Array chunks of audio,

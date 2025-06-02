@@ -320,13 +320,13 @@ export default function Home() {
       
       // Add a small delay before processing to ensure audio pipeline is ready
       // This helps with voice quality by allowing previous audio processing to complete
-      const processingDelay = audioQueue.current.length > 0 ? 150 : 50; // Longer delay if queue has items
+      const processingDelay = 0; // Reduced delay
       
       // Call the TTS function with a small delay to ensure proper sequencing
       console.log(`[TTS_PLAYBACK] Processing TTS for chunk: "${text}" with voice ${selectedVoice.name} after ${processingDelay}ms delay`);
-      setTimeout(() => {
-        playTtsAudio(text, languageCodeForCartesia, selectedVoice.id);
-      }, processingDelay);
+      // setTimeout(() => { // Removed setTimeout for direct call
+      playTtsAudio(text, languageCodeForCartesia, selectedVoice.id);
+      // }, processingDelay);
     } else {
       console.error(`[TTS_PLAYBACK] No suitable voice found for language: ${languageCodeForCartesia}`);
       setError(`TTS Error: No suitable voice found for language: ${languageCodeForCartesia}`);
@@ -689,7 +689,7 @@ export default function Home() {
       
       // Add a small delay before starting the next chunk to ensure proper sequencing
       // This helps with the voice quality by giving the audio system time to process
-      const startDelay = 0.05; // 50ms delay
+      const startDelay = 0; // 0ms delay, was 0.05
       
       // Connect through analyzer for visualization if it exists
       if (ttsAnalyser.current) {
@@ -705,10 +705,10 @@ export default function Home() {
         console.log('[TTS_PLAYBACK] Audio chunk finished playing');
         // Add a small delay before processing the next chunk
         // This ensures the audio system has time to fully process the current chunk
-        setTimeout(() => {
-          isPlayingTtsRef.current = false;
-          playNextInQueue(); // Play next chunk if available
-        }, 20); // 20ms delay between chunks
+        // setTimeout(() => { // Removed timeout for direct call
+        isPlayingTtsRef.current = false;
+        playNextInQueue(); // Play next chunk if available
+        // }, 0); // Was 20ms delay
       };
       
       console.log('[TTS_PLAYBACK] Starting audio playback');
@@ -733,7 +733,7 @@ export default function Home() {
       console.log('[TTS_PLAYBACK] Creating new AudioContext with sampleRate 44100');
       try {
         ttsAudioContext.current = new (window.AudioContext || (window as any).webkitAudioContext)({
-          sampleRate: 48000 // Match Cartesia's output sample rate (pcm_f32le at 48kHz)
+          sampleRate: 44100 // Should match the incoming stream's sample rate
         });
         console.log('[TTS_PLAYBACK] AudioContext created successfully, state:', ttsAudioContext.current.state);
         
@@ -824,48 +824,48 @@ export default function Home() {
               try {
                 // Apply enhanced smoothing to reduce audio artifacts
                 // This helps with the "scratchy" sound and improves voice clarity
-                const smoothedArray = new Float32Array(float32Array.length);
+                // const smoothedArray = new Float32Array(float32Array.length);
                 
-                // First pass: 7-point weighted moving average filter for better smoothing
-                // This provides more natural voice quality by reducing high-frequency noise
-                for (let i = 3; i < float32Array.length - 3; i++) {
-                  // Weighted average with center sample having more influence
-                  // Using a wider window with carefully tuned weights for better voice quality
-                  smoothedArray[i] = (
-                    float32Array[i-3] * 0.02 + 
-                    float32Array[i-2] * 0.05 + 
-                    float32Array[i-1] * 0.12 + 
-                    float32Array[i] * 0.62 + 
-                    float32Array[i+1] * 0.12 + 
-                    float32Array[i+2] * 0.05 + 
-                    float32Array[i+3] * 0.02
-                  );
-                }
+                // // First pass: 7-point weighted moving average filter for better smoothing
+                // // This provides more natural voice quality by reducing high-frequency noise
+                // for (let i = 3; i < float32Array.length - 3; i++) {
+                //   // Weighted average with center sample having more influence
+                //   // Using a wider window with carefully tuned weights for better voice quality
+                //   smoothedArray[i] = (
+                //     float32Array[i-3] * 0.02 +
+                //     float32Array[i-2] * 0.05 +
+                //     float32Array[i-1] * 0.12 +
+                //     float32Array[i] * 0.62 +
+                //     float32Array[i+1] * 0.12 +
+                //     float32Array[i+2] * 0.05 +
+                //     float32Array[i+3] * 0.02
+                //   );
+                // }
                 
-                // Handle edge cases with improved boundary handling
-                // This prevents clicks and pops at the start and end of audio chunks
-                smoothedArray[0] = float32Array[0] * 0.8; // Slight fade-in
-                smoothedArray[1] = (float32Array[0] * 0.2 + float32Array[1] * 0.6 + float32Array[2] * 0.2);
-                smoothedArray[2] = (float32Array[0] * 0.05 + float32Array[1] * 0.15 + float32Array[2] * 0.6 + float32Array[3] * 0.15 + float32Array[4] * 0.05);
+                // // Handle edge cases with improved boundary handling
+                // // This prevents clicks and pops at the start and end of audio chunks
+                // smoothedArray[0] = float32Array[0] * 0.8; // Slight fade-in
+                // smoothedArray[1] = (float32Array[0] * 0.2 + float32Array[1] * 0.6 + float32Array[2] * 0.2);
+                // smoothedArray[2] = (float32Array[0] * 0.05 + float32Array[1] * 0.15 + float32Array[2] * 0.6 + float32Array[3] * 0.15 + float32Array[4] * 0.05);
                 
-                // Handle the end of the array
-                smoothedArray[float32Array.length-3] = (float32Array[float32Array.length-5] * 0.05 + 
-                                                     float32Array[float32Array.length-4] * 0.15 + 
-                                                     float32Array[float32Array.length-3] * 0.6 + 
-                                                     float32Array[float32Array.length-2] * 0.15 + 
-                                                     float32Array[float32Array.length-1] * 0.05);
-                smoothedArray[float32Array.length-2] = (float32Array[float32Array.length-3] * 0.2 + 
-                                                     float32Array[float32Array.length-2] * 0.6 + 
-                                                     float32Array[float32Array.length-1] * 0.2);
-                smoothedArray[float32Array.length-1] = float32Array[float32Array.length-1] * 0.8; // Slight fade-out
+                // // Handle the end of the array
+                // smoothedArray[float32Array.length-3] = (float32Array[float32Array.length-5] * 0.05 +
+                //                                      float32Array[float32Array.length-4] * 0.15 +
+                //                                      float32Array[float32Array.length-3] * 0.6 +
+                //                                      float32Array[float32Array.length-2] * 0.15 +
+                //                                      float32Array[float32Array.length-1] * 0.05);
+                // smoothedArray[float32Array.length-2] = (float32Array[float32Array.length-3] * 0.2 +
+                //                                      float32Array[float32Array.length-2] * 0.6 +
+                //                                      float32Array[float32Array.length-1] * 0.2);
+                // smoothedArray[float32Array.length-1] = float32Array[float32Array.length-1] * 0.8; // Slight fade-out
                 
                 const audioBuffer = audioContextForPlayback.createBuffer(
                   1, // numberOfChannels (mono)
-                  smoothedArray.length, // length (number of frames)
-                  48000 // sampleRate (explicitly set to 48000 to match Cartesia's output)  
+                  float32Array.length, // length (number of frames) // Using float32Array directly
+                  audioContextForPlayback.sampleRate // Use the actual sample rate of the context
                 );
                 
-                audioBuffer.getChannelData(0).set(smoothedArray);
+                audioBuffer.getChannelData(0).set(float32Array); // Using float32Array directly
                 audioQueue.current.push(audioBuffer);
                 console.log(`[TTS_PLAYBACK] Added buffer to queue. Queue length: ${audioQueue.current.length}`);
                 
