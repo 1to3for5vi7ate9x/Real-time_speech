@@ -22,6 +22,9 @@ export default function Home() {
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [audioLevel, setAudioLevel] = useState<number>(0); // For audio visualizer
   const [error, setError] = useState<string | null>(null);
+  const [selectedVideoFile, setSelectedVideoFile] = useState<File | null>(null);
+  const [dubbedAudioBuffer, setDubbedAudioBuffer] = useState<AudioBuffer | null>(null); // For storing full TTS of video
+  const [uploadedVideoUrl, setUploadedVideoUrl] = useState<string | null>(null);
 
   // Language and Voice State
   const targetLanguages = [
@@ -46,6 +49,7 @@ export default function Home() {
   const scriptProcessorNodeRef = useRef<ScriptProcessorNode | null>(null); // For PCM data
   const mediaStreamRef = useRef<MediaStream | null>(null); // To hold the stream for stopping tracks
   const isRecordingRef = useRef<boolean>(false);
+  const fullVideoTranscriptRef = useRef<string>(''); // To accumulate full transcript for video
 
   // Fetch Cartesia Voices on component mount
   useEffect(() => {
@@ -110,17 +114,20 @@ export default function Home() {
                 }
               } else if (transcriptData.message_type === "FinalTranscript" && transcriptData.text) {
                 const newFinalText = transcriptData.text;
-                // Append final text to the finalized transcript
                 setFinalizedTranscript(prev => prev + newFinalText + ' ');
-                setCurrentPartial(''); // Clear partial after final
+                setCurrentPartial('');
 
-                // Call translation API - but only if we haven't already translated this text as a partial
-                // This prevents double translations of the same content
-                if (newFinalText.trim() && newFinalText !== lastProcessedTextRef.current.text) {
-                  console.log(`[TRANSLATE_TRIGGER] Final transcript received. Current selectedLanguageRef value: ${selectedLanguageRef.current}. Text: "${newFinalText}"`);
-                  translateText(newFinalText, selectedLanguageRef.current, false); // Use the ref's current value
-                } else {
-                  console.log(`[TRANSLATE_TRIGGER] Skipping final translation as it was already processed as partial: "${newFinalText}"`);
+                if (selectedVideoFile) { // If processing a video
+                  fullVideoTranscriptRef.current += newFinalText + ' ';
+                  console.log(`[VIDEO_ASR] Accumulated video transcript: "${fullVideoTranscriptRef.current.substring(0, 100)}..."`);
+                  // Translation for video will happen once all ASR is done, triggered in processUploadedVideoAudio
+                } else { // For microphone input
+                  if (newFinalText.trim() && newFinalText !== lastProcessedTextRef.current.text) {
+                    console.log(`[MIC_ASR_TRANSLATE_TRIGGER] Final transcript received. Text: "${newFinalText}"`);
+                    translateText(newFinalText, selectedLanguageRef.current, false);
+                  } else {
+                    console.log(`[MIC_ASR_TRANSLATE_TRIGGER] Skipping final translation as it was already processed as partial: "${newFinalText}"`);
+                  }
                 }
               }
             } else if (message.type === 'ASSEMBLYAI_SESSION_OPENED') {
@@ -282,9 +289,10 @@ export default function Home() {
   };
 
   // Function to process TTS for a specific voice and text
-  const processTtsForVoice = (text: string, language: string) => {
+  const processTtsForVoice = async (text: string, language: string, forVideoContext: boolean = false) => {
     if (!text.trim() || !cartesiaVoicesRef.current || cartesiaVoicesRef.current.length === 0) return;
     
+    console.log(`[TTS_PROC_VOICE] Processing TTS for text: "${text}", lang: ${language}, forVideoContext: ${forVideoContext}`);
     const languageCodeForCartesia = language;
     const normalizeLang = (lang: string = '') => lang.toLowerCase().split('-')[0];
     
@@ -316,17 +324,23 @@ export default function Home() {
       }
       
       // Update the last TTS call ref
-      lastTtsCallRef.current = {text, voiceId: selectedVoice.id, isPartial: false};
+      lastTtsCallRef.current = {text, voiceId: selectedVoice.id, isPartial: forVideoContext ? false : lastTtsCallRef.current.isPartial };
       
-      // Add a small delay before processing to ensure audio pipeline is ready
-      // This helps with voice quality by allowing previous audio processing to complete
-      const processingDelay = 0; // Reduced delay
+      console.log(`[TTS_PLAYBACK] Requesting TTS for: "${text}" with voice ${selectedVoice.name}. For video context: ${forVideoContext}`);
       
-      // Call the TTS function with a small delay to ensure proper sequencing
-      console.log(`[TTS_PLAYBACK] Processing TTS for chunk: "${text}" with voice ${selectedVoice.name} after ${processingDelay}ms delay`);
-      // setTimeout(() => { // Removed setTimeout for direct call
-      playTtsAudio(text, languageCodeForCartesia, selectedVoice.id);
-      // }, processingDelay);
+      if (forVideoContext) {
+        const fullAudioBufferResult = await playTtsAudio(text, languageCodeForCartesia, selectedVoice.id, true);
+        if (fullAudioBufferResult && fullAudioBufferResult.length > 0) {
+          console.log(`[TTS_PROC_VOICE] Full audio buffer received for video context. Length: ${fullAudioBufferResult.length}, Duration: ${fullAudioBufferResult.duration.toFixed(2)}s`);
+          setDubbedAudioBuffer(fullAudioBufferResult);
+        } else {
+          console.error('[TTS_PROC_VOICE] Failed to get full audio buffer (or buffer is empty) for video context.');
+          setError('Failed to generate dubbed audio for video.');
+        }
+      } else {
+        // Original streaming playback for live mic input
+        await playTtsAudio(text, languageCodeForCartesia, selectedVoice.id, false);
+      }
     } else {
       console.error(`[TTS_PLAYBACK] No suitable voice found for language: ${languageCodeForCartesia}`);
       setError(`TTS Error: No suitable voice found for language: ${languageCodeForCartesia}`);
@@ -573,24 +587,203 @@ export default function Home() {
     // Process TTS for the final translation after recording stops
     // This ensures we wait for the complete translation before starting TTS
     if (lastCompletedTranslationRef.current && lastCompletedTranslationRef.current.text) {
-      console.log('[TTS_PLAYBACK] Processing TTS for final translation after recording stopped');
+      console.log('[TTS_PLAYBACK] Processing TTS for final microphone translation after recording stopped');
       
       // Wait for a moment to ensure any final translations have completed
-      setTimeout(() => {
-        // Clear any existing audio queue to prevent overlap
-        if (audioQueue.current.length > 0) {
-          console.log(`[TTS_PLAYBACK] Clearing existing audio queue with ${audioQueue.current.length} items`);
+      setTimeout(async () => {
+        if (audioQueue.current.length > 0 && !selectedVideoFile) { // Only clear queue if it was for mic
+          console.log(`[TTS_PLAYBACK] Clearing existing audio queue with ${audioQueue.current.length} items for mic TTS`);
           audioQueue.current = [];
         }
         
-        // Process the full final translation text without chunking
         const { text, language } = lastCompletedTranslationRef.current;
-        console.log(`[TTS_PLAYBACK] Processing complete translation: "${text}"`);
-        processTtsForVoice(text, language);
+        if (text && language) {
+          console.log(`[TTS_PLAYBACK] Processing mic translation: "${text}"`);
+          await processTtsForVoice(text, language, false); // forVideoContext is false for mic
+        }
         
-        // Reset the reference after processing
         lastCompletedTranslationRef.current = { text: '', language: '' };
-      }, 800); // Wait 800ms to ensure final translation is complete
+      }, 800);
+    }
+  };
+
+  const processUploadedVideoAudio = async (videoFile: File) => {
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
+      setError('WebSocket is not connected. Cannot process video.');
+      return;
+    }
+    if (isRecordingRef.current) {
+      console.log('Processing already in progress.'); // Or some other form of processing
+      return;
+    }
+
+    setIsRecording(true); // Use isRecording to indicate processing
+    isRecordingRef.current = true;
+    setError(null);
+    setFinalizedTranscript('');
+    setCurrentPartial('');
+    setTranslatedText('');
+    console.log(`[VIDEO_PROC] Starting processing for ${videoFile.name}`);
+
+    try {
+      // Ensure ttsAudioContext is used for video decoding and TTS generation audio ops
+      // to keep sample rates consistent if Cartesia outputs 44100 for TTS.
+      // However, decodeAudioData will use the file's own rate, then we resample for ASR.
+      // For TTS generation, playTtsAudio initializes/uses ttsAudioContext.
+      let decodingAudioContext = audioContext.current; // For ASR path
+      if (!decodingAudioContext) {
+        decodingAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        audioContext.current = decodingAudioContext; // Save it if it was created for ASR
+      } else if (decodingAudioContext.state === 'suspended') {
+        await decodingAudioContext.resume();
+      }
+      
+      const arrayBuffer = await videoFile.arrayBuffer();
+      console.log('[VIDEO_PROC] Video file read into ArrayBuffer.');
+
+      // Use a temporary AudioContext for decoding if you want to ensure no conflicts,
+      // or be sure about the sample rate of the main audioContext.current.
+      // For now, using the shared audioContext.current for decoding.
+      const decodedAudioBuffer = await decodingAudioContext.decodeAudioData(arrayBuffer);
+      console.log('[VIDEO_PROC] Audio decoded. Sample rate:', decodedAudioBuffer.sampleRate, 'Duration:', decodedAudioBuffer.duration);
+
+      const rawPcmData = decodedAudioBuffer.getChannelData(0); // Assuming mono, or take first channel
+      const sourceSampleRate = decodedAudioBuffer.sampleRate;
+      const targetSampleRate = 16000;
+
+      let resampleBuffer = new Float32Array(0); // Buffer to accumulate samples for resampling
+
+      // Simulate the streaming accumulation for the resampling logic
+      // We'll feed the entire rawPcmData in one go to the resampleBuffer
+      const newLength = resampleBuffer.length + rawPcmData.length;
+      const tempBuffer = new Float32Array(newLength);
+      tempBuffer.set(resampleBuffer, 0);
+      tempBuffer.set(rawPcmData, resampleBuffer.length);
+      resampleBuffer = tempBuffer;
+
+      const resampleRatio = sourceSampleRate / targetSampleRate;
+      // Aim for 250ms chunks at 16kHz = 4000 samples
+      const desiredOutputLength = Math.floor(targetSampleRate * 0.250);
+      let chunksSent = 0;
+
+      console.log(`[VIDEO_PROC] Starting chunking and sending. Resample ratio: ${resampleRatio}, Desired output length: ${desiredOutputLength}`);
+
+      while (resampleBuffer.length >= Math.floor(desiredOutputLength * resampleRatio)) {
+        if (!isRecordingRef.current) { // Allow cancellation
+          console.log('[VIDEO_PROC] Processing cancelled.');
+          break;
+        }
+        const processableChunk = resampleBuffer.slice(0, Math.floor(desiredOutputLength * resampleRatio));
+        resampleBuffer = resampleBuffer.slice(Math.floor(desiredOutputLength * resampleRatio));
+
+        const downsampledPcm = new Float32Array(desiredOutputLength);
+        for (let i = 0; i < desiredOutputLength; i++) {
+          const correspondingSourceIndex = Math.floor(i * resampleRatio);
+          if (correspondingSourceIndex < processableChunk.length) {
+            downsampledPcm[i] = processableChunk[correspondingSourceIndex];
+          } else {
+            downsampledPcm[i] = 0;
+          }
+        }
+
+        const outputInt16 = new Int16Array(downsampledPcm.length);
+        for (let i = 0; i < downsampledPcm.length; i++) {
+          const s = Math.max(-1, Math.min(1, downsampledPcm[i]));
+          outputInt16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+
+        if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+          ws.current.send(outputInt16.buffer);
+          chunksSent++;
+        } else {
+          console.warn('[VIDEO_PROC] WebSocket not open, cannot send chunk.');
+          setError('WebSocket connection lost during processing.');
+          isRecordingRef.current = false; // Stop processing
+          break;
+        }
+      }
+      
+      console.log(`[VIDEO_PROC] Finished sending ${chunksSent} audio chunks.`);
+
+      if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+        console.log('[VIDEO_PROC] Sending endStream to server.');
+        ws.current.send(JSON.stringify({ action: "endStream" }));
+      }
+      
+      // After ASR stream ends for the video file
+      setTimeout(async () => {
+        if (selectedVideoFile && fullVideoTranscriptRef.current.trim()) {
+          const completeTranscript = fullVideoTranscriptRef.current.trim();
+          console.log(`[VIDEO_PROC] Full transcript for video: "${completeTranscript}"`);
+          
+          // Translate the entire transcript
+          await translateText(completeTranscript, selectedLanguageRef.current, false);
+          
+          // Now lastCompletedTranslationRef.current should hold the full translation
+          if (lastCompletedTranslationRef.current && lastCompletedTranslationRef.current.text) {
+            console.log(`[VIDEO_PROC] Triggering TTS for video's full translation: "${lastCompletedTranslationRef.current.text}"`);
+            setDubbedAudioBuffer(null); // Clear previous
+            await processTtsForVoice(lastCompletedTranslationRef.current.text, lastCompletedTranslationRef.current.language, true); // forVideoContext is true
+          } else {
+            console.error('[VIDEO_PROC] Full translation for TTS was not available after translating complete transcript.');
+            setError('Failed to get full translation for video TTS.');
+          }
+          fullVideoTranscriptRef.current = ''; // Reset for next video
+          lastCompletedTranslationRef.current = { text: '', language: '' }; // Reset after use
+        } else {
+          console.log('[VIDEO_PROC] No full transcript available for video to translate and generate TTS.');
+          if(selectedVideoFile) setError('ASR did not produce a transcript for the video.');
+        }
+      }, 500); // Reduced delay, as ASR 'endStream' should mean all data is sent.
+
+    } catch (err) {
+      console.error('[VIDEO_PROC] Error processing video audio:', err);
+      setError(`Error processing video: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsRecording(false);
+      isRecordingRef.current = false;
+      console.log('[VIDEO_PROC] Processing finished.');
+    }
+  };
+
+  const handleVideoFileChange = (file: File) => {
+    console.log('Video file selected:', file);
+    setSelectedVideoFile(file);
+    setDubbedAudioBuffer(null);
+    fullVideoTranscriptRef.current = ''; // Reset full video transcript
+
+    // Create and set object URL for the new video file
+    if (uploadedVideoUrl) {
+      URL.revokeObjectURL(uploadedVideoUrl); // Clean up previous URL
+    }
+    const newUrl = URL.createObjectURL(file);
+    setUploadedVideoUrl(newUrl);
+
+    // Reset relevant states when a new video is uploaded
+    setFinalizedTranscript('');
+    setCurrentPartial('');
+    setTranslatedText('');
+    setError(null);
+    
+    if (isRecordingRef.current) { // If live recording was happening
+      stopRecording(); // Stop it first
+    }
+    processUploadedVideoAudio(file); // Then process the video
+  };
+
+  const handlePlayMicTts = async () => {
+    if (lastCompletedTranslationRef.current && lastCompletedTranslationRef.current.text) {
+      const { text, language } = lastCompletedTranslationRef.current;
+      console.log(`[TTS_PLAY_MIC] Playing last completed mic translation: "${text}"`);
+      // Ensure audio queue is clear for this distinct playback
+      if (audioQueue.current.length > 0) {
+          console.log(`[TTS_PLAY_MIC] Clearing existing audio queue with ${audioQueue.current.length} items.`);
+          audioQueue.current = [];
+      }
+      await processTtsForVoice(text, language, false); // Not for video context, so stream it
+    } else {
+      console.log('[TTS_PLAY_MIC] No completed mic translation to play.');
+      setError('No microphone translation available to play.');
     }
   };
 
@@ -721,14 +914,21 @@ export default function Home() {
     }
   };
 
-  const playTtsAudio = async (textToSpeak: string, language: string, voiceId: string) => {
-    console.log(`[TTS_PLAYBACK] Requesting TTS audio for: "${textToSpeak}"`);
+  const playTtsAudio = async (
+    textToSpeak: string,
+    language: string,
+    voiceId: string,
+    returnFullBuffer: boolean = false // New parameter
+  ): Promise<AudioBuffer | null> => { // Updated return type
+    console.log(`[TTS_PLAYBACK] Requesting TTS audio for: "${textToSpeak}", returnFullBuffer: ${returnFullBuffer}`);
     
-    // Start latency measurement
-    ttsLatencyStartTime.current = performance.now();
-    console.log(`[TTS_LATENCY] Starting latency measurement at ${ttsLatencyStartTime.current}ms`);
+    // Start latency measurement only for streaming playback
+    if (!returnFullBuffer) {
+      ttsLatencyStartTime.current = performance.now();
+      console.log(`[TTS_LATENCY] Starting latency measurement at ${ttsLatencyStartTime.current}ms`);
+    }
     
-    // Check and initialize or resume AudioContext
+    // Check and initialize or resume AudioContext (ttsAudioContext specifically)
     if (!ttsAudioContext.current) {
       console.log('[TTS_PLAYBACK] Creating new AudioContext with sampleRate 44100');
       try {
@@ -746,7 +946,7 @@ export default function Home() {
       } catch (err: any) {
         console.error('[TTS_PLAYBACK] Failed to create AudioContext:', err);
         setError(`TTS Error: Could not create audio context - ${err.message}`);
-        return;
+        return null;
       }
     } else if (ttsAudioContext.current.state === 'suspended') {
       console.log('[TTS_PLAYBACK] Resuming suspended AudioContext');
@@ -764,8 +964,16 @@ export default function Home() {
       } catch (err: any) {
         console.error('[TTS_PLAYBACK] Failed to resume AudioContext:', err);
         setError(`TTS Error: Could not resume audio context - ${err.message}`);
-        return;
+        return null;
       }
+    }
+    
+    const audioContextForPlayback = ttsAudioContext.current;
+
+    if (!audioContextForPlayback) {
+        console.error('[TTS_PLAYBACK] ttsAudioContext is not available before try block.');
+        setError('TTS Error: Audio context not available.');
+        return null;
     }
     
     try {
@@ -784,108 +992,93 @@ export default function Home() {
 
       console.log('[TTS_PLAYBACK] API response OK, getting reader');
       const reader = response.body.getReader();
-      const audioContextForPlayback = ttsAudioContext.current; // Use the ref
-      
-      if (!audioContextForPlayback) {
-        throw new Error('AudioContext is null after successful API response');
-      }
+      // audioContextForPlayback is already defined and checked
 
       console.log('[TTS_PLAYBACK] Starting to process audio stream');
       let totalBytesReceived = 0;
       let chunksProcessed = 0;
+      let accumulatedSamples = new Float32Array(0);
       
-      // Clear existing queue to start fresh
-      audioQueue.current = [];
-      isPlayingTtsRef.current = false;
+      if (!returnFullBuffer) {
+        audioQueue.current = [];
+        isPlayingTtsRef.current = false;
+      }
 
-      // Process the stream
       // eslint-disable-next-line no-constant-condition
       while (true) {
         const { done, value } = await reader.read();
         if (done) {
           console.log(`[TTS_PLAYBACK] Stream finished. Processed ${chunksProcessed} chunks, ${totalBytesReceived} bytes total.`);
-          break;
+          if (returnFullBuffer) {
+            if (accumulatedSamples.length > 0 && audioContextForPlayback) {
+              try {
+                const finalBuffer = audioContextForPlayback.createBuffer(
+                  1,
+                  accumulatedSamples.length,
+                  audioContextForPlayback.sampleRate
+                );
+                finalBuffer.getChannelData(0).set(accumulatedSamples);
+                console.log('[TTS_PLAYBACK] Created final aggregated AudioBuffer.');
+                return finalBuffer;
+              } catch (bufferErr: any) {
+                  console.error('[TTS_PLAYBACK] Error creating final aggregated audio buffer:', bufferErr);
+                  return null;
+              }
+            } else {
+              console.warn('[TTS_PLAYBACK] No samples accumulated or no AudioContext for full buffer.');
+              return null;
+            }
+          } else {
+            break;
+          }
         }
         
         if (value) {
           totalBytesReceived += value.byteLength;
           chunksProcessed++;
           
-          console.log(`[TTS_PLAYBACK] Received chunk ${chunksProcessed}: ${value.byteLength} bytes`);
-          
-          if (audioContextForPlayback) {
-            // value is Uint8Array, convert to Float32Array for pcm_f32le
-            // Each float32 is 4 bytes.
-            const float32Array = new Float32Array(value.buffer, value.byteOffset, value.byteLength / 4);
+          // No need to check audioContextForPlayback again, it's checked before the try block
+          const float32Array = new Float32Array(value.buffer, value.byteOffset, value.byteLength / 4);
             
-            console.log(`[TTS_PLAYBACK] Converted to Float32Array: ${float32Array.length} samples`);
-            
-            if (float32Array.length > 0) {
+          if (float32Array.length > 0) {
+            if (returnFullBuffer) {
+              const newAccumulatedBuffer = new Float32Array(accumulatedSamples.length + float32Array.length);
+              newAccumulatedBuffer.set(accumulatedSamples, 0);
+              newAccumulatedBuffer.set(float32Array, accumulatedSamples.length);
+              accumulatedSamples = newAccumulatedBuffer;
+            } else {
               try {
-                // Apply enhanced smoothing to reduce audio artifacts
-                // This helps with the "scratchy" sound and improves voice clarity
-                // const smoothedArray = new Float32Array(float32Array.length);
-                
-                // // First pass: 7-point weighted moving average filter for better smoothing
-                // // This provides more natural voice quality by reducing high-frequency noise
-                // for (let i = 3; i < float32Array.length - 3; i++) {
-                //   // Weighted average with center sample having more influence
-                //   // Using a wider window with carefully tuned weights for better voice quality
-                //   smoothedArray[i] = (
-                //     float32Array[i-3] * 0.02 +
-                //     float32Array[i-2] * 0.05 +
-                //     float32Array[i-1] * 0.12 +
-                //     float32Array[i] * 0.62 +
-                //     float32Array[i+1] * 0.12 +
-                //     float32Array[i+2] * 0.05 +
-                //     float32Array[i+3] * 0.02
-                //   );
-                // }
-                
-                // // Handle edge cases with improved boundary handling
-                // // This prevents clicks and pops at the start and end of audio chunks
-                // smoothedArray[0] = float32Array[0] * 0.8; // Slight fade-in
-                // smoothedArray[1] = (float32Array[0] * 0.2 + float32Array[1] * 0.6 + float32Array[2] * 0.2);
-                // smoothedArray[2] = (float32Array[0] * 0.05 + float32Array[1] * 0.15 + float32Array[2] * 0.6 + float32Array[3] * 0.15 + float32Array[4] * 0.05);
-                
-                // // Handle the end of the array
-                // smoothedArray[float32Array.length-3] = (float32Array[float32Array.length-5] * 0.05 +
-                //                                      float32Array[float32Array.length-4] * 0.15 +
-                //                                      float32Array[float32Array.length-3] * 0.6 +
-                //                                      float32Array[float32Array.length-2] * 0.15 +
-                //                                      float32Array[float32Array.length-1] * 0.05);
-                // smoothedArray[float32Array.length-2] = (float32Array[float32Array.length-3] * 0.2 +
-                //                                      float32Array[float32Array.length-2] * 0.6 +
-                //                                      float32Array[float32Array.length-1] * 0.2);
-                // smoothedArray[float32Array.length-1] = float32Array[float32Array.length-1] * 0.8; // Slight fade-out
-                
                 const audioBuffer = audioContextForPlayback.createBuffer(
-                  1, // numberOfChannels (mono)
-                  float32Array.length, // length (number of frames) // Using float32Array directly
-                  audioContextForPlayback.sampleRate // Use the actual sample rate of the context
+                  1, float32Array.length, audioContextForPlayback.sampleRate
                 );
-                
-                audioBuffer.getChannelData(0).set(float32Array); // Using float32Array directly
+                audioBuffer.getChannelData(0).set(float32Array);
                 audioQueue.current.push(audioBuffer);
-                console.log(`[TTS_PLAYBACK] Added buffer to queue. Queue length: ${audioQueue.current.length}`);
-                
-                // Attempt to play the next item in the queue
                 playNextInQueue();
               } catch (bufferErr: any) {
-                console.error('[TTS_PLAYBACK] Error creating audio buffer:', bufferErr);
+                console.error('[TTS_PLAYBACK] Error creating audio buffer for streaming:', bufferErr);
               }
-            } else {
-              console.warn('[TTS_PLAYBACK] Received empty Float32Array, skipping buffer creation');
             }
-          } else {
-            console.error('[TTS_PLAYBACK] AudioContext is null during stream processing');
           }
         }
       }
+      
+      // This part is reached if the while loop breaks (i.e., stream is done)
+      // AND returnFullBuffer is false.
+      if (!returnFullBuffer) {
+        return null;
+      }
+      // If returnFullBuffer is true, a return should have happened inside the (done) block.
+      // Adding a fallback return null here for safety, though it ideally shouldn't be reached in that case.
+      return null;
+
     } catch (err: any) {
       console.error('[TTS_PLAYBACK] Error in TTS playback process:', err);
       setError(`TTS playback failed: ${err.message}`);
+      return null; // Ensure null return in catch block
     }
+    // This final return should ideally not be reached if logic is correct,
+    // but it satisfies TypeScript's need for an explicit return at the end of all paths.
+    return null;
   };
 
 
@@ -895,9 +1088,9 @@ export default function Home() {
         <h1 className="text-3xl sm:text-4xl font-bold text-gray-800">
           Real-Time Speech Translation POC
         </h1>
-        <p className="text-sm text-gray-600 mt-2">
+        {/* <p className="text-sm text-gray-600 mt-2">
           WebSocket Status: {isConnected ? <span className="text-green-600 font-semibold">Connected</span> : <span className="text-red-600 font-semibold">Disconnected</span>}
-        </p>
+        </p> */}
         {error && <p className="text-sm text-red-500 mt-1">{error}</p>}
         {isVoicesLoading && <p className="text-sm text-blue-500 mt-1">Loading voices...</p>}
       </header>
@@ -928,36 +1121,45 @@ export default function Home() {
               )}
             </select>
           </div>
-          
+        </section>
+
+        <section aria-labelledby="video-player-section" className="mb-8">
+          <h2 id="video-player-section" className="sr-only">Video Player</h2>
+          <VideoPlayer
+            onVideoFileChange={handleVideoFileChange}
+            videoSrcProp={uploadedVideoUrl || undefined}
+            dubbedAudioBuffer={dubbedAudioBuffer}
+          />
+        </section>
+        
+        {/* Microphone Recording Controls - Moved Below Video Player */}
+        <section aria-labelledby="mic-controls-section" className="flex flex-col items-center gap-4">
+          <h2 id="mic-controls-section" className="text-lg font-semibold text-gray-700">Microphone Input</h2>
           <div className="flex justify-center gap-4">
             <button
-            onClick={startRecording}
-            disabled={isRecording || !isConnected || isVoicesLoading || (!cartesiaVoices || cartesiaVoices.length === 0)}
-            className="px-6 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
-          >
-            Start Recording
-          </button>
-          <button
-            onClick={stopRecording}
-            disabled={!isRecording}
-            className="px-6 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 disabled:bg-gray-400"
-          >
-            Stop Recording
-          </button>
+              onClick={isRecording ? stopRecording : startRecording}
+              disabled={!isConnected || isVoicesLoading || (!cartesiaVoices || cartesiaVoices.length === 0) || (isRecording && selectedVideoFile !== null) /* Disable if video is being processed */}
+              className={`px-6 py-2 text-white rounded-lg hover:opacity-90 disabled:bg-gray-400 disabled:cursor-not-allowed
+                ${isRecording ? 'bg-red-500' : 'bg-green-500'}`}
+            >
+              {isRecording ? 'Stop Recording' : 'Start Recording'}
+            </button>
+            <button
+              onClick={handlePlayMicTts}
+              disabled={isRecording || !lastCompletedTranslationRef.current.text}
+              className="px-6 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 disabled:bg-gray-400"
+            >
+              Play Last Mic Translation
+            </button>
           </div>
-          {isRecording && (
+          {isRecording && !selectedVideoFile && ( // Only show mic volume if not processing video
             <div className="w-full max-w-xs bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 my-2">
               <div
                 className="bg-blue-600 h-2.5 rounded-full transition-all duration-50 ease-linear"
-                style={{ width: `${Math.min(100, (audioLevel / 128) * 100)}%` }} // Normalize roughly to 0-100%
+                style={{ width: `${Math.min(100, (audioLevel / 128) * 100)}%` }}
               ></div>
             </div>
           )}
-        </section>
-
-        <section aria-labelledby="video-player-section">
-          <h2 id="video-player-section" className="sr-only">Video Player</h2>
-          <VideoPlayer />
         </section>
 
         <section aria-labelledby="transcription-section">
