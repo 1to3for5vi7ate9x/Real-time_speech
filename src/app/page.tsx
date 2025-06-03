@@ -49,7 +49,9 @@ export default function Home() {
   const scriptProcessorNodeRef = useRef<ScriptProcessorNode | null>(null); // For PCM data
   const mediaStreamRef = useRef<MediaStream | null>(null); // To hold the stream for stopping tracks
   const isRecordingRef = useRef<boolean>(false);
-  const fullVideoTranscriptRef = useRef<string>(''); // To accumulate full transcript for video
+  const fullVideoTranscriptRef = useRef<string>('');
+  const isProcessingVideoASRRef = useRef<boolean>(false);
+  const expectingVideoSessionTerminationRef = useRef<boolean>(false); // True when waiting for ASR server to confirm video session end
 
   // Fetch Cartesia Voices on component mount
   useEffect(() => {
@@ -106,34 +108,70 @@ export default function Home() {
               const transcriptData = message.transcript;
               if (transcriptData.message_type === "PartialTranscript") {
                 setCurrentPartial(transcriptData.text);
-                // For real-time experience, also translate partial transcripts if they're substantial
-                // Only translate if the partial transcript is at least 5 characters long and contains a word
-                if (transcriptData.text.trim().length >= 5 && transcriptData.text.includes(' ')) {
-                  // Use debounced translation for partial transcripts to avoid too many requests
-                  debouncedTranslateText(transcriptData.text, selectedLanguageRef.current, true, 300);
+                if (!selectedVideoFile && !isProcessingVideoASRRef.current && transcriptData.text.trim().length >= 5 && transcriptData.text.includes(' ')) {
+                  debouncedTranslateTextForMic(transcriptData.text, selectedLanguageRef.current, true, 300);
                 }
               } else if (transcriptData.message_type === "FinalTranscript" && transcriptData.text) {
                 const newFinalText = transcriptData.text;
                 setFinalizedTranscript(prev => prev + newFinalText + ' ');
                 setCurrentPartial('');
 
-                if (selectedVideoFile) { // If processing a video
+                if (isProcessingVideoASRRef.current && selectedVideoFile) {
                   fullVideoTranscriptRef.current += newFinalText + ' ';
-                  console.log(`[VIDEO_ASR] Accumulated video transcript: "${fullVideoTranscriptRef.current.substring(0, 100)}..."`);
-                  // Translation for video will happen once all ASR is done, triggered in processUploadedVideoAudio
-                } else { // For microphone input
+                } else if (!selectedVideoFile) {
                   if (newFinalText.trim() && newFinalText !== lastProcessedTextRef.current.text) {
-                    console.log(`[MIC_ASR_TRANSLATE_TRIGGER] Final transcript received. Text: "${newFinalText}"`);
-                    translateText(newFinalText, selectedLanguageRef.current, false);
-                  } else {
-                    console.log(`[MIC_ASR_TRANSLATE_TRIGGER] Skipping final translation as it was already processed as partial: "${newFinalText}"`);
+                    translateTextForMic(newFinalText, selectedLanguageRef.current, false);
                   }
                 }
+              } else if (transcriptData.message_type === 'SessionTerminated') { // AssemblyAI specific
+                console.log('[WS_MESSAGE] Received SessionTerminated from AssemblyAI (via server)');
+                if (expectingVideoSessionTerminationRef.current && selectedVideoFile) {
+                  expectingVideoSessionTerminationRef.current = false;
+                  isProcessingVideoASRRef.current = false;
+                  setIsRecording(false);
+                  isRecordingRef.current = false;
+                  
+                  const completeVideoTranscript = fullVideoTranscriptRef.current.trim();
+                  if (completeVideoTranscript) {
+                    console.log('[VIDEO_PROC_END] ASR Session Terminated. Processing full transcript.');
+                    handleFinalVideoTranscript(completeVideoTranscript, selectedLanguageRef.current);
+                  } else {
+                    console.warn('[VIDEO_PROC_END] ASR Session Terminated, but no transcript was accumulated for the video.');
+                    setError('ASR did not produce a transcript for the video.');
+                  }
+                  fullVideoTranscriptRef.current = ''; // Reset after processing
+                }
               }
+            } else if (message.type === 'SESSION_TERMINATED_BY_SERVER') { // Custom server message
+                console.log('[WS_MESSAGE] Received SESSION_TERMINATED_BY_SERVER');
+                 if (expectingVideoSessionTerminationRef.current && selectedVideoFile) {
+                  expectingVideoSessionTerminationRef.current = false;
+                  isProcessingVideoASRRef.current = false;
+                  setIsRecording(false);
+                  isRecordingRef.current = false;
+
+                  const completeVideoTranscript = fullVideoTranscriptRef.current.trim();
+                  if (completeVideoTranscript) {
+                     console.log('[VIDEO_PROC_END] Server confirmed session end. Processing full transcript.');
+                    handleFinalVideoTranscript(completeVideoTranscript, selectedLanguageRef.current);
+                  } else {
+                    console.warn('[VIDEO_PROC_END] Server confirmed session end, but no transcript accumulated.');
+                    setError('ASR did not produce a transcript for the video (server confirmed end).');
+                  }
+                  fullVideoTranscriptRef.current = '';
+                }
             } else if (message.type === 'ASSEMBLYAI_SESSION_OPENED') {
               console.log('AssemblyAI session opened:', message.sessionId);
             } else if (message.type === 'ERROR' || message.type === 'ASSEMBLYAI_ERROR') {
               console.error('Error from WebSocket server:', message.message || message.error?.message);
+              // If an error occurs during video processing ASR, reset flags
+              if (isProcessingVideoASRRef.current && selectedVideoFile) {
+                isProcessingVideoASRRef.current = false;
+                expectingVideoSessionTerminationRef.current = false;
+                setIsRecording(false);
+                isRecordingRef.current = false;
+                setError(`ASR Error for video: ${message.message || message.error?.message}`);
+              }
             }
         } else {
             // Handle plain text messages (like our initial welcome message)
@@ -199,17 +237,13 @@ export default function Home() {
   // Track the last TTS call to prevent duplicates
   const lastTtsCallRef = useRef<{text: string, voiceId: string, isPartial: boolean}>({text: '', voiceId: '', isPartial: false});
   
-  const debouncedTranslateText = (text: string, targetLang: string, isPartial: boolean = true, delay: number = 500) => {
-    // Clear any existing timeout
+  const debouncedTranslateTextForMic = (text: string, targetLang: string, isPartial: boolean = true, delay: number = 500) => {
     if (debounceTimeoutRef.current) {
       clearTimeout(debounceTimeoutRef.current);
     }
-    
-    // Set a new timeout
     debounceTimeoutRef.current = setTimeout(() => {
-      // Only process if this text+isPartial combination hasn't been processed recently
       if (text !== lastProcessedTextRef.current.text || isPartial !== lastProcessedTextRef.current.isPartial) {
-        translateText(text, targetLang, isPartial);
+        translateTextForMic(text, targetLang, isPartial); // Call the mic-specific version
         lastProcessedTextRef.current = {text, isPartial};
       }
     }, delay);
@@ -347,16 +381,18 @@ export default function Home() {
     }
   };
 
-  // Function to translate text and trigger TTS
-  const translateText = async (textToTranslate: string, targetLang: string, isPartial: boolean = false) => {
+  // Function to translate text FOR MICROPHONE INPUT ONLY
+  const translateTextForMic = async (textToTranslate: string, targetLang: string, isPartial: boolean = false) => {
     if (!textToTranslate.trim()) return;
-    
-    // Skip if this is the same text we just processed (prevents duplicates)
-    if (textToTranslate === lastProcessedTextRef.current.text && isPartial === lastProcessedTextRef.current.isPartial) {
+
+    if (isPartial && textToTranslate === lastProcessedTextRef.current.text && lastProcessedTextRef.current.isPartial) {
       return;
     }
+    if (!isPartial && textToTranslate === lastProcessedTextRef.current.text && !lastProcessedTextRef.current.isPartial) {
+        return;
+    }
     
-    console.log(`Requesting translation for: "${textToTranslate}" to ${targetLang}${isPartial ? ' (partial)' : ''}`);
+    console.log(`Requesting MIC translation for: "${textToTranslate.substring(0,100)}..." to ${targetLang}${isPartial ? ' (partial)' : ''}`);
     try {
       const response = await fetch('/api/translate', {
         method: 'POST',
@@ -374,42 +410,20 @@ export default function Home() {
       // Handle the translated text differently based on whether it's from a partial or final transcript
       const newTranslatedText = data.translatedText;
       
-      // Store this text in our tracking refs to prevent duplicates
-      lastProcessedTextRef.current = {text: textToTranslate, isPartial};
-      
+      // This function is now only for mic input.
       if (isPartial) {
-        // For partial translations, just replace the current text
-        // This creates a more real-time experience as the translation updates
         setTranslatedText(newTranslatedText);
         lastTranslatedTextRef.current = newTranslatedText;
-      } else {
-        // For final translations, check if this text is already part of the translated text
-        // to avoid duplication
-        if (!lastTranslatedTextRef.current.includes(newTranslatedText)) {
-          setTranslatedText(prev => {
-            // If the previous text was from a partial that's similar to this final,
-            // replace it instead of appending
-            if (lastTranslatedTextRef.current && 
-                newTranslatedText.includes(lastTranslatedTextRef.current.substring(0, lastTranslatedTextRef.current.length/2))) {
-              return newTranslatedText + ' ';
+        lastProcessedTextRef.current = {text: textToTranslate, isPartial: true};
+      } else { // Final translation for microphone input
+         setTranslatedText(prev => {
+            if (lastTranslatedTextRef.current && newTranslatedText.startsWith(lastTranslatedTextRef.current.substring(0, Math.max(0, lastTranslatedTextRef.current.length - 5)))) {
+                return newTranslatedText + ' ';
             }
             return prev + newTranslatedText + ' ';
-          });
-        } else {
-          // If the final translation is already included (likely from a partial), don't append
-          console.log('Skipping duplicate final translation');
-        }
-      }
-
-      // Store the latest translation in a ref for TTS when recording stops
-      // Only update if this is a final translation (not partial)
-      if (!isPartial && newTranslatedText.trim()) {
-        console.log('[TRANSLATION] Final translation stored for TTS when recording stops');
-        // Store the translation and target language for TTS when recording stops
-        lastCompletedTranslationRef.current = {
-          text: newTranslatedText,
-          language: targetLang
-        };
+        });
+        lastCompletedTranslationRef.current = { text: newTranslatedText, language: targetLang };
+        lastProcessedTextRef.current = {text: textToTranslate, isPartial: false};
       }
     } catch (err: any) {
       console.error('Error translating text:', err);
@@ -612,18 +626,21 @@ export default function Home() {
       setError('WebSocket is not connected. Cannot process video.');
       return;
     }
-    if (isRecordingRef.current) {
-      console.log('Processing already in progress.'); // Or some other form of processing
+    if (isProcessingVideoASRRef.current) { // Check only ASR phase ref
+      console.log('Video ASR processing already in progress.');
       return;
     }
 
-    setIsRecording(true); // Use isRecording to indicate processing
+    isProcessingVideoASRRef.current = true;
+    setIsRecording(true);
     isRecordingRef.current = true;
     setError(null);
+    fullVideoTranscriptRef.current = '';
     setFinalizedTranscript('');
     setCurrentPartial('');
     setTranslatedText('');
-    console.log(`[VIDEO_PROC] Starting processing for ${videoFile.name}`);
+    setDubbedAudioBuffer(null);
+    console.log(`[VIDEO_PROC] Starting ASR for ${videoFile.name}`);
 
     try {
       // Ensure ttsAudioContext is used for video decoding and TTS generation audio ops
@@ -708,49 +725,81 @@ export default function Home() {
       if (ws.current && ws.current.readyState === WebSocket.OPEN) {
         console.log('[VIDEO_PROC] Sending endStream to server.');
         ws.current.send(JSON.stringify({ action: "endStream" }));
+        expectingVideoSessionTerminationRef.current = true; // Crucial: set this flag
+        console.log('[VIDEO_PROC] endStream sent. Waiting for session termination message from server.');
       }
-      
-      // After ASR stream ends for the video file
-      setTimeout(async () => {
-        if (selectedVideoFile && fullVideoTranscriptRef.current.trim()) {
-          const completeTranscript = fullVideoTranscriptRef.current.trim();
-          console.log(`[VIDEO_PROC] Full transcript for video: "${completeTranscript}"`);
-          
-          // Translate the entire transcript
-          await translateText(completeTranscript, selectedLanguageRef.current, false);
-          
-          // Now lastCompletedTranslationRef.current should hold the full translation
-          if (lastCompletedTranslationRef.current && lastCompletedTranslationRef.current.text) {
-            console.log(`[VIDEO_PROC] Triggering TTS for video's full translation: "${lastCompletedTranslationRef.current.text}"`);
-            setDubbedAudioBuffer(null); // Clear previous
-            await processTtsForVoice(lastCompletedTranslationRef.current.text, lastCompletedTranslationRef.current.language, true); // forVideoContext is true
-          } else {
-            console.error('[VIDEO_PROC] Full translation for TTS was not available after translating complete transcript.');
-            setError('Failed to get full translation for video TTS.');
-          }
-          fullVideoTranscriptRef.current = ''; // Reset for next video
-          lastCompletedTranslationRef.current = { text: '', language: '' }; // Reset after use
-        } else {
-          console.log('[VIDEO_PROC] No full transcript available for video to translate and generate TTS.');
-          if(selectedVideoFile) setError('ASR did not produce a transcript for the video.');
-        }
-      }, 500); // Reduced delay, as ASR 'endStream' should mean all data is sent.
+      // The setTimeout block that was here has been removed.
+      // Logic to call handleFinalVideoTranscript is now in ws.onmessage based on SessionTerminated.
 
     } catch (err) {
-      console.error('[VIDEO_PROC] Error processing video audio:', err);
+      console.error('[VIDEO_PROC] Error during ASR data sending phase for video:', err);
       setError(`Error processing video: ${err instanceof Error ? err.message : String(err)}`);
+      // Ensure all relevant flags are reset on error during ASR phase
+      isProcessingVideoASRRef.current = false;
+      expectingVideoSessionTerminationRef.current = false;
+      if (isRecordingRef.current) {
+        setIsRecording(false);
+        isRecordingRef.current = false;
+      }
     } finally {
-      setIsRecording(false);
-      isRecordingRef.current = false;
-      console.log('[VIDEO_PROC] Processing finished.');
+      // This finally block might be too early if we are waiting for SessionTerminated.
+      // The flags like isRecording should be set to false when SessionTerminated is received or if an error occurs.
+      // For now, let's ensure isProcessingVideoASRRef is false if it was true and an error didn't catch it.
+      // The actual end of "recording" state for UI will be when SessionTerminated is handled.
+      if (isProcessingVideoASRRef.current) {
+         // This indicates an error might have occurred before endStream was sent or before SessionTerminated.
+         console.warn("[VIDEO_PROC] ASR processing flag was still true in finally, an error likely occurred or flow was interrupted.");
+         // isProcessingVideoASRRef.current = false; // This is now handled by SessionTerminated or error catch
+      }
+      console.log('[VIDEO_PROC] Initial ASR data sending part for video concluded.');
     }
   };
 
+  const handleFinalVideoTranscript = async (fullTranscript: string, targetLang: string) => {
+    console.log(`[VIDEO_WORKFLOW] Starting full translation for: "${fullTranscript.substring(0, 100)}..."`);
+    setError(null); // Clear previous errors
+    setTranslatedText('Translating full video content...'); // Indicate activity
+    try {
+      const response = await fetch('/api/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: fullTranscript, targetLang }),
+      });
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || `Full video translation API request failed: ${response.statusText}`);
+      }
+      const data = await response.json();
+      const fullVideoTranslatedText = data.translatedText;
+      console.log("[VIDEO_WORKFLOW] Full video translation received:", fullVideoTranslatedText.substring(0, 100));
+      setTranslatedText(fullVideoTranslatedText);
+
+      if (fullVideoTranslatedText) {
+        console.log("[VIDEO_WORKFLOW] Generating TTS for full video translation.");
+        setDubbedAudioBuffer(null); // Clear previous before generating new
+        await processTtsForVoice(fullVideoTranslatedText, targetLang, true); // forVideoContext = true
+      } else {
+         setError('Full video translation resulted in empty text.');
+      }
+    } catch (err: any) {
+      console.error('[VIDEO_WORKFLOW] Error in full video translation/TTS:', err);
+      setError(`Full video processing failed: ${err.message}`);
+      setTranslatedText(''); // Clear indication of translation
+    }
+  };
+
+
   const handleVideoFileChange = (file: File) => {
     console.log('Video file selected:', file);
+    isProcessingVideoASRRef.current = false;
+    expectingVideoSessionTerminationRef.current = false; // Reset for new file
     setSelectedVideoFile(file);
     setDubbedAudioBuffer(null);
-    fullVideoTranscriptRef.current = ''; // Reset full video transcript
+    fullVideoTranscriptRef.current = '';
+    lastCompletedTranslationRef.current = { text: '', language: '' };
+    setFinalizedTranscript('');
+    setTranslatedText('');
+
 
     // Create and set object URL for the new video file
     if (uploadedVideoUrl) {
@@ -1074,10 +1123,10 @@ export default function Home() {
     } catch (err: any) {
       console.error('[TTS_PLAYBACK] Error in TTS playback process:', err);
       setError(`TTS playback failed: ${err.message}`);
-      return null; // Ensure null return in catch block
+      return null;
     }
-    // This final return should ideally not be reached if logic is correct,
-    // but it satisfies TypeScript's need for an explicit return at the end of all paths.
+    // This ensures that if the function reaches this point (e.g. after the while loop if not returning a full buffer,
+    // or if an error occurred that didn't explicitly return), it still satisfies the Promise<AudioBuffer | null> type.
     return null;
   };
 
