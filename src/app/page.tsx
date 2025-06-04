@@ -10,6 +10,7 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { useAudioRecording } from '../hooks/useAudioRecording';
 import { useTranslation } from '../hooks/useTranslation';
 import { useTTS } from '../hooks/useTTS';
+import { SubtitleWord } from '../components/Subtitles';
 
 // Types
 interface CartesiaVoice {
@@ -40,9 +41,11 @@ export default function Home() {
   const [finalizedTranscript, setFinalizedTranscript] = useState('');
   const [currentPartial, setCurrentPartial] = useState('');
   const [isProcessingVideo, setIsProcessingVideo] = useState(false);
+  const [subtitleWords, setSubtitleWords] = useState<SubtitleWord[]>([]);
 
   // Refs
   const fullVideoTranscriptRef = useRef('');
+  const videoWordsRef = useRef<SubtitleWord[]>([]);
   const isProcessingVideoASRRef = useRef(false);
   const expectingVideoSessionTerminationRef = useRef(false);
   const lastCompletedTranslationRef = useRef<{ text: string; language: string }>({ text: '', language: '' });
@@ -70,8 +73,11 @@ export default function Home() {
       
       const completeVideoTranscript = fullVideoTranscriptRef.current.trim();
       console.log('[SESSION_TERMINATED] Complete transcript length:', completeVideoTranscript.length);
+      console.log('[SESSION_TERMINATED] Total words with timestamps:', videoWordsRef.current.length);
       
       if (completeVideoTranscript) {
+        // Set subtitle words for display
+        setSubtitleWords(videoWordsRef.current);
         handleFinalVideoTranscript(completeVideoTranscript, selectedLanguageRef.current);
       } else {
         setError('No speech detected in the video. Please ensure your video contains clear audio.');
@@ -95,6 +101,19 @@ export default function Home() {
 
       if (isProcessingVideoASRRef.current && selectedVideoFileRef.current) {
         fullVideoTranscriptRef.current += newFinalText + ' ';
+        
+        // Extract and store word timestamps for subtitles
+        if (transcript.words && Array.isArray(transcript.words)) {
+          const newWords: SubtitleWord[] = transcript.words.map((word: any) => ({
+            start: word.start,
+            end: word.end,
+            text: word.text,
+            confidence: word.confidence
+          }));
+          videoWordsRef.current = [...videoWordsRef.current, ...newWords];
+          console.log('[TRANSCRIPT] Added words with timestamps:', newWords.length);
+        }
+        
         console.log('[TRANSCRIPT] Added to video transcript:', newFinalText);
         console.log('[TRANSCRIPT] Total video transcript length so far:', fullVideoTranscriptRef.current.length);
       } else if (!selectedVideoFileRef.current) {
@@ -189,6 +208,8 @@ export default function Home() {
     setCurrentPartial('');
     clearTranslation();
     setDubbedAudioBuffer(null);
+    setSubtitleWords([]);
+    videoWordsRef.current = [];
 
     try {
       console.log('[VIDEO_PROC] Starting video processing for:', videoFile.name);
@@ -268,6 +289,9 @@ export default function Home() {
       endStream();
       expectingVideoSessionTerminationRef.current = true;
       
+      // Add a small delay after sending all chunks to ensure final transcripts are received
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
       // Set a timeout to handle case where server doesn't respond with SessionTerminated
       // Increase timeout to ensure we get the complete transcript
       setTimeout(() => {
@@ -281,15 +305,18 @@ export default function Home() {
           const completeVideoTranscript = fullVideoTranscriptRef.current.trim();
           console.log('[VIDEO_PROC] Forcing completion with transcript length:', completeVideoTranscript.length);
           console.log('[VIDEO_PROC] Complete transcript:', completeVideoTranscript);
+          console.log('[VIDEO_PROC] Total words with timestamps:', videoWordsRef.current.length);
           
           if (completeVideoTranscript) {
+            // Set subtitle words for display
+            setSubtitleWords(videoWordsRef.current);
             handleFinalVideoTranscript(completeVideoTranscript, selectedLanguageRef.current);
           } else {
             setError('No speech detected in the video. Please ensure your video contains clear audio.');
           }
           fullVideoTranscriptRef.current = '';
         }
-      }, 10000); // 10 second timeout to ensure complete transcript
+      }, 15000); // 15 second timeout to ensure complete transcript
       
     } catch (err) {
       console.error('[VIDEO_PROC] Error processing video:', err);
@@ -394,9 +421,11 @@ export default function Home() {
     setSelectedVideoFile(file);
     setDubbedAudioBuffer(null);
     fullVideoTranscriptRef.current = '';
+    videoWordsRef.current = [];
     lastCompletedTranslationRef.current = { text: '', language: '' };
     setFinalizedTranscript('');
     clearTranslation();
+    setSubtitleWords([]);
 
     if (uploadedVideoUrl) {
       URL.revokeObjectURL(uploadedVideoUrl);
@@ -514,6 +543,7 @@ export default function Home() {
             videoSrcProp={uploadedVideoUrl || undefined}
             dubbedAudioBuffer={dubbedAudioBuffer}
             isProcessing={isProcessingVideo}
+            subtitleWords={subtitleWords}
           />
         </section>
 

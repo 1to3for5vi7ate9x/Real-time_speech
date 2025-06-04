@@ -1,12 +1,14 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
+import Subtitles, { SubtitleWord } from './Subtitles';
 
 interface VideoPlayerProps {
   onVideoFileChange: (file: File) => void;
   videoSrcProp?: string;
   dubbedAudioBuffer?: AudioBuffer | null;
   isProcessing?: boolean;
+  subtitleWords?: SubtitleWord[];
 }
 
 const VideoPlayer: React.FC<VideoPlayerProps> = ({
@@ -14,10 +16,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   videoSrcProp,
   dubbedAudioBuffer,
   isProcessing = false,
+  subtitleWords = [],
 }) => {
   const [internalVideoSrc, setInternalVideoSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [videoKey, setVideoKey] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [isPlayingWithDub, setIsPlayingWithDub] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -67,6 +72,21 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   }, [videoSrcProp, internalVideoSrc]);
 
+  const currentDisplaySrc = internalVideoSrc || videoSrcProp;
+
+  // Update current time for subtitles
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    
+    const updateTime = () => {
+      setCurrentTime(video.currentTime);
+    };
+    
+    video.addEventListener('timeupdate', updateTime);
+    return () => video.removeEventListener('timeupdate', updateTime);
+  }, [currentDisplaySrc]);
+
   const playDubbedAudio = async () => {
     if (!videoRef.current || !dubbedAudioBuffer) {
       setError("Dubbed audio not ready or video not loaded.");
@@ -99,6 +119,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       
       videoRef.current.muted = true;
       videoRef.current.currentTime = 0;
+      setCurrentTime(0);
+      setIsPlayingWithDub(true);
       
       await videoRef.current.play();
       source.start();
@@ -110,14 +132,14 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
           videoRef.current.pause();
         }
         dubbedAudioSourceRef.current = null;
+        setIsPlayingWithDub(false);
       };
     } catch (err) {
       console.error("Error playing dubbed audio:", err);
       setError("Could not play dubbed audio. Please try again.");
+      setIsPlayingWithDub(false);
     }
   };
-
-  const currentDisplaySrc = internalVideoSrc || videoSrcProp;
 
   return (
     <div className="relative w-full max-w-4xl mx-auto">
@@ -166,13 +188,23 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
         {/* Video Element */}
         {currentDisplaySrc && (
-          <video
-            key={videoKey}
-            ref={videoRef}
-            src={currentDisplaySrc}
-            controls
-            className="w-full aspect-video"
-          />
+          <>
+            <video
+              key={videoKey}
+              ref={videoRef}
+              src={currentDisplaySrc}
+              controls
+              className="w-full aspect-video"
+            />
+            {/* Subtitles Overlay */}
+            {isPlayingWithDub && subtitleWords.length > 0 && (
+              <Subtitles
+                words={subtitleWords}
+                currentTime={currentTime}
+                isPlaying={isPlayingWithDub}
+              />
+            )}
+          </>
         )}
 
         {/* Processing Overlay */}
