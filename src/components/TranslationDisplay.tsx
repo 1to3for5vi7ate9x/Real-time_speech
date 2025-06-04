@@ -1,0 +1,44 @@
+'use client';
+
+import React from 'react';
+
+interface TranslationDisplayProps {
+  translatedText: string;
+  targetLanguage: string;
+  isTranslating?: boolean;
+  className?: string;
+}
+
+const TranslationDisplay: React.FC<TranslationDisplayProps> = ({
+  translatedText,
+  targetLanguage,
+  isTranslating = false,
+  className = ''
+}) => {
+  return (
+    <div className={`bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 sm:p-6 shadow-sm ${className}`}>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-medium text-gray-700 dark:text-gray-400">
+          Translation ({targetLanguage})
+        </h3>
+        {isTranslating && (
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+            <span className="text-xs text-gray-500 dark:text-gray-500">Translating</span>
+          </div>
+        )}
+      </div>
+      <div className="h-32 overflow-y-auto custom-scrollbar">
+        <p className="text-gray-800 dark:text-gray-200 whitespace-pre-wrap leading-relaxed">
+          {translatedText || (
+            <span className="text-gray-400 dark:text-gray-500 italic">
+              {isTranslating ? "Translating..." : "Waiting for translation..."}
+            </span>
+          )}
+        </p>
+      </div>
+    </div>
+  );
+};
+
+export default TranslationDisplay;

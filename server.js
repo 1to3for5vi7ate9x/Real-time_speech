@@ -59,9 +59,30 @@ app.prepare().then(() => {
       }
     };
 
+    // Track if AssemblyAI session is ready
+    let isAssemblyAIReady = false;
+    let audioQueue = [];
+
+    // Helper function to process queued audio
+    const processQueuedAudio = () => {
+      if (isAssemblyAIReady && audioQueue.length > 0) {
+        console.log(`[Custom Server ASR] Processing ${audioQueue.length} queued audio chunks`);
+        audioQueue.forEach((audioData) => {
+          try {
+            transcriber.sendAudio(audioData);
+          } catch (e) {
+            console.error('[Custom Server ASR] Error sending queued audio to AssemblyAI:', e);
+          }
+        });
+        audioQueue = [];
+      }
+    };
+
     // Helper function to safely close the AssemblyAI transcriber
     const safeCloseTranscriber = () => {
       try {
+        isAssemblyAIReady = false;
+        audioQueue = [];
         if (transcriber && typeof transcriber.close === 'function') {
           // Check if the transcriber has a state like `isOpen` or similar if provided by SDK
           // For now, just attempt to close and catch errors.
@@ -74,7 +95,10 @@ app.prepare().then(() => {
 
     transcriber.on('open', ({ sessionId }) => {
       console.log(`[Custom Server ASR] AssemblyAI session opened: ${sessionId}`);
+      isAssemblyAIReady = true;
       safeSendToClient({ type: 'ASSEMBLYAI_SESSION_OPENED', sessionId });
+      // Process any queued audio
+      processQueuedAudio();
     });
 
     transcriber.on('transcript', (transcript) => {
@@ -88,7 +112,10 @@ app.prepare().then(() => {
 
     transcriber.on('close', (code, reason) => {
       console.log(`[Custom Server ASR] AssemblyAI session closed: ${code}, ${reason}`);
+      isAssemblyAIReady = false;
       safeSendToClient({ type: 'ASSEMBLYAI_SESSION_CLOSED', code, reason });
+      // Also send session terminated when AssemblyAI closes
+      safeSendToClient({ type: 'SESSION_TERMINATED_BY_SERVER' });
     });
 
     transcriber.connect().catch((err) => {
@@ -103,12 +130,16 @@ app.prepare().then(() => {
       console.log(`[Custom Server ASR] Message received. Type: ${typeof message}, Is Buffer: ${Buffer.isBuffer(message)}`);
       if (Buffer.isBuffer(message)) {
         console.log(`[Custom Server ASR] Received audio buffer of length: ${message.length}`);
-        if (transcriber && typeof transcriber.sendAudio === 'function') {
+        if (isAssemblyAIReady && transcriber && typeof transcriber.sendAudio === 'function') {
           try {
             transcriber.sendAudio(message);
           } catch (e) {
             console.error('[Custom Server ASR] Error sending audio to AssemblyAI:', e);
           }
+        } else {
+          // Queue audio if AssemblyAI is not ready yet
+          console.log('[Custom Server ASR] AssemblyAI not ready, queueing audio chunk');
+          audioQueue.push(message);
         }
       } else if (typeof message === 'string') {
         console.log(`[Custom Server ASR] Received string message: ${message}`);
@@ -116,6 +147,8 @@ app.prepare().then(() => {
           const command = JSON.parse(message);
           if (command.action === 'endStream') {
             console.log('[Custom Server ASR] Client requested to end stream.');
+            // Send session terminated message before closing
+            safeSendToClient({ type: 'SESSION_TERMINATED_BY_SERVER' });
             safeCloseTranscriber();
           }
         } catch (e) {
