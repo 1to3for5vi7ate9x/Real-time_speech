@@ -1,124 +1,206 @@
 # Real-Time Speech Translation and Video Dubbing POC
 
-This is a [Next.js](https://nextjs.org/) project demonstrating a Proof of Concept (POC) for real-time speech-to-text (STT), translation, and text-to-speech (TTS) capabilities, along with video file processing for dubbed audio playback.
+This is a [Next.js](https://nextjs.org/) project demonstrating a Proof of Concept (POC) for real-time speech-to-text (STT), translation, and text-to-speech (TTS) capabilities, along with video file processing for dubbed audio playback with synchronized subtitles.
 
 ## Features
 
-*   **Real-time Microphone Input:**
-    *   Captures audio from the user's microphone.
-    *   Streams audio to a backend for Speech-to-Text (ASR) processing (e.g., via AssemblyAI).
-    *   Displays live transcription (partial and final).
-    *   Translates final transcript segments in real-time to a selected target language.
-    *   Allows playback of the translated audio for the last spoken segment using Text-to-Speech (TTS) via Cartesia.
-*   **Video File Processing:**
-    *   Allows users to upload a video file.
-    *   Extracts audio from the video.
-    *   Processes the entire audio content through the ASR service.
-    *   Accumulates the full transcript from the video.
-    *   Translates the complete transcript into the selected target language.
-    *   Generates a complete dubbed audio track (TTS) for the full translation using Cartesia.
-    *   Provides an option to play the original video (muted) synchronized with the generated dubbed audio track.
-*   **Dynamic Language and Voice Selection:**
-    *   Fetches available TTS voices (e.g., from Cartesia API).
-    *   Allows users to select a target language for translation.
-    *   Automatically selects an appropriate voice for the target language for TTS.
+### 🎥 Video Processing
+*   **Upload & Process:** Support for MP4, WebM, and OGG video formats (max 100MB)
+*   **Automatic Transcription:** Real-time speech-to-text using AssemblyAI with word-level timestamps
+*   **Multi-language Translation:** Supports Spanish, French, Hindi, Japanese, and German
+*   **AI Dubbing:** Generates natural-sounding dubbed audio using Cartesia AI voices
+*   **Synchronized Subtitles:** Displays original English subtitles synchronized with dubbed audio playback
+*   **Smart Processing:** Handles videos up to 30 seconds with optimized chunking for complete transcription
+
+### 🎤 Live Microphone Input
+*   **Real-time Transcription:** Live speech-to-text conversion with partial and final transcripts
+*   **Instant Translation:** Translates speech as you talk
+*   **Audio Visualization:** Visual feedback for microphone input levels
+*   **TTS Playback:** Play translated audio for the last spoken segment
+
+### 🌐 Translation Services
+*   **DeepL Integration:** High-quality translations for European and Asian languages
+*   **Google Translate:** Specialized support for Hindi translation
+*   **Chunked Processing:** Intelligently splits long texts (>3000 chars) into sentences for accurate translation
+
+### 🔊 Text-to-Speech
+*   **Cartesia AI Voices:** Natural-sounding voices in multiple languages
+*   **Automatic Voice Selection:** Chooses appropriate voice based on language and gender preferences
+*   **Streaming Playback:** Low-latency audio streaming for responsive feedback
+*   **Full Audio Buffer Generation:** Creates complete dubbed audio tracks for video synchronization
 
 ## Core Technologies Used
 
-*   **Frontend:** Next.js (React)
-*   **Speech-to-Text (ASR):** AssemblyAI (via a backend WebSocket proxy)
-*   **Translation:** DeepL (via a backend API route)
-*   **Text-to-Speech (TTS):** Cartesia (via a backend API route)
-*   **Web Audio API:** For audio capture, processing, and playback.
+*   **Frontend:** Next.js 14 (React), TypeScript, Tailwind CSS
+*   **Speech-to-Text (ASR):** AssemblyAI (real-time WebSocket API)
+*   **Translation:** DeepL API and Google Cloud Translation API
+*   **Text-to-Speech (TTS):** Cartesia API (streaming audio generation)
+*   **Audio Processing:** Web Audio API for capture, resampling, and playback
+*   **Backend:** Custom Node.js server with WebSocket support
 
 ## Project Structure
 
-*   `src/app/page.tsx`: Main page component containing the core UI and client-side logic for audio processing, WebSocket communication, and state management.
-*   `src/components/VideoPlayer.tsx`: Component for video file upload and playback (including dubbed audio).
-*   `src/components/TranscriptionDisplay.tsx`: Component to display ASR transcripts.
-*   `src/app/api/`: Contains Next.js API routes acting as backends-for-frontends (BFFs):
-    *   `translate/route.ts`: Handles translation requests (e.g., to DeepL).
-    *   `tts/route.ts`: Handles TTS requests (e.g., to Cartesia).
-    *   `voices/route.ts`: Fetches available TTS voices (e.g., from Cartesia).
-*   `server.js`: (Assumed) A Node.js WebSocket server that proxies ASR requests to a service like AssemblyAI and streams results back to the client. *(Details of this server are not fully managed by this assistant but are crucial for the ASR functionality).*
+```
+Disney_poc/
+├── src/
+│   ├── app/
+│   │   ├── api/              # API routes
+│   │   │   ├── translate/    # Translation endpoint
+│   │   │   ├── tts/         # Text-to-Speech endpoint
+│   │   │   └── voices/      # Voice listing endpoint
+│   │   ├── page.tsx         # Main application page
+│   │   ├── layout.tsx       # Root layout
+│   │   └── globals.css      # Global styles
+│   ├── components/
+│   │   ├── VideoPlayer.tsx  # Video upload and playback
+│   │   ├── Subtitles.tsx    # Subtitle synchronization
+│   │   ├── TranscriptionDisplay.tsx  # Live transcription
+│   │   ├── TranslationDisplay.tsx    # Translation display
+│   │   ├── LanguageSelector.tsx      # Language dropdown
+│   │   └── AudioVisualizer.tsx       # Audio level display
+│   └── hooks/               # Custom React hooks
+│       ├── useWebSocket.ts  # WebSocket management
+│       ├── useAudioRecording.ts  # Microphone handling
+│       ├── useTranslation.ts     # Translation logic
+│       └── useTTS.ts            # TTS management
+├── server.js               # WebSocket server for ASR
+├── package.json           # Dependencies
+├── tsconfig.json         # TypeScript config
+└── .env.local           # Environment variables
+```
 
 ## Environment Variables
 
 Create a `.env.local` file in the root of the project with the following variables:
 
-```
-NEXT_PUBLIC_ASSEMBLYAI_API_KEY="your_assemblyai_api_key_here"
-# Replace with your actual AssemblyAI API key (if using client-side ASR initiation or if your backend needs it publicly)
-# Or, if your server.js handles the API key securely, this might not be needed on the client-side.
+```env
+# AssemblyAI API Key (required)
+NEXT_PUBLIC_ASSEMBLYAI_API_KEY=your_assemblyai_api_key_here
 
-CARTESIA_API_KEY="your_cartesia_api_key_here"
-# Replace with your Cartesia API key for TTS. This is used by the backend /api/tts and /api/voices routes.
+# DeepL API Key (required for most languages)
+DEEPL_API_KEY=your_deepl_api_key_here
 
-DEEPL_AUTH_KEY="your_deepl_auth_key_here"
-# Replace with your DeepL API key (Free or Pro) for translation. This is used by the backend /api/translate route.
+# Google Cloud Translation (required for Hindi)
+# Option 1: Service Account Credentials
+GOOGLE_APPLICATION_CREDENTIALS=path/to/your/google-credentials.json
+# Option 2: API Key
+GOOGLE_TRANSLATE_API_KEY=your_google_translate_api_key
 
-# Optional: If your ASR WebSocket server runs on a different URL
-# NEXT_PUBLIC_WEBSOCKET_URL="ws://your-asr-websocket-server-url"
+# Cartesia API Key (required for TTS)
+CARTESIA_API_KEY=your_cartesia_api_key_here
+
+# Optional: Custom WebSocket URL (defaults to ws://localhost:3000/ws/asr)
+NEXT_PUBLIC_WEBSOCKET_URL=ws://localhost:3000/ws/asr
 ```
 
 **Note:** Ensure that API keys with usage costs are properly secured and managed. For production, sensitive keys should ideally not be exposed on the client-side.
 
 ## Getting Started
 
-1.  **Clone the repository.**
+1.  **Clone the repository:**
+    ```bash
+    git clone <repository-url>
+    cd Disney_poc
+    ```
+
 2.  **Install dependencies:**
     ```bash
     npm install
-    # or
-    yarn install
     ```
+
 3.  **Set up your API Keys:**
-    Create a `.env.local` file in the project root and add your API keys for AssemblyAI, Cartesia, and DeepL as shown above.
-4.  **Run the development server (Next.js frontend):**
+    Create a `.env.local` file in the project root and add your API keys as shown above.
+
+4.  **Run the development server:**
     ```bash
     npm run dev
-    # or
-    yarn dev
     ```
-    This will typically start the frontend on [http://localhost:3000](http://localhost:3000).
-5.  **Run the backend ASR WebSocket server:**
-    Ensure your `server.js` (or equivalent WebSocket proxy for AssemblyAI) is running. The client expects this server to be available, typically at `ws://localhost:8000/ws/asr` if `NEXT_PUBLIC_WEBSOCKET_URL` is not set, or the URL specified.
-    *(The setup for `server.js` is external to this Next.js project's direct build but is a required dependency for ASR.)*
+    This starts both the Next.js frontend and the WebSocket server on [http://localhost:3000](http://localhost:3000).
 
-6.  Open [http://localhost:3000](http://localhost:3000) in your browser.
+5.  **Open your browser:**
+    Navigate to [http://localhost:3000](http://localhost:3000)
+
+6.  **Grant microphone permissions when prompted**
 
 ## How It Works
 
-### Microphone Input:
-1.  User clicks "Start Recording".
-2.  Audio is captured using the Web Audio API.
-3.  PCM audio data is streamed via WebSocket to the backend ASR server (`server.js`).
-4.  The ASR server (proxying to AssemblyAI) streams back partial and final transcripts.
-5.  Partial transcripts update the UI for a live feel.
-6.  Final transcript segments are sent to the `/api/translate` route.
-7.  The translated text for segments is displayed.
-8.  The user can click "Play Last Mic Translation" to send the last final translated segment to `/api/tts`, which streams back audio for playback.
+### Microphone Input Flow:
+1.  User clicks "Start Recording"
+2.  Audio captured at native sample rate using Web Audio API
+3.  Audio resampled to 16kHz and converted to PCM16
+4.  PCM data streamed via WebSocket to backend server
+5.  Server forwards audio to AssemblyAI real-time API
+6.  Partial transcripts update UI in real-time
+7.  Final transcripts are translated via DeepL/Google API
+8.  User can play TTS audio of the translation
 
-### Video File Input:
-1.  User uploads a video file via the `VideoPlayer` component.
-2.  The client extracts the audio from the video using the Web Audio API (`decodeAudioData`).
-3.  The extracted audio is chunked, resampled, and streamed to the backend ASR server.
-4.  All `FinalTranscript` messages from the ASR are accumulated.
-5.  Once the ASR service signals the end of the session for the video, the complete accumulated transcript is sent to the `/api/translate` route.
-6.  The fully translated text is received and displayed.
-7.  This full translation is then sent to the `/api/tts` route to generate a complete dubbed `AudioBuffer`.
-8.  The user can click "Play with Dubbed Audio" in the `VideoPlayer` to play the original video (muted) alongside the dubbed audio.
+### Video Processing Flow:
+1.  User uploads video file (MP4/WebM/OGG)
+2.  Audio extracted using Web Audio API
+3.  Audio chunked into 100ms segments for processing
+4.  Each chunk resampled to 16kHz PCM16
+5.  Chunks streamed to AssemblyAI with timestamps preserved
+6.  Word-level timestamps stored for subtitle synchronization
+7.  Complete transcript translated in chunks (3000 char limit)
+8.  Full translation sent to Cartesia for TTS generation
+9.  User plays video with:
+    - Original video (muted)
+    - Dubbed audio in target language
+    - Synchronized English subtitles
 
-## Further Development / TODOs
+### Technical Details:
+- **Audio Processing:** 16kHz sampling rate, 16-bit PCM encoding
+- **Chunking:** 100ms audio chunks for optimal ASR performance
+- **Translation:** Sentence-aware splitting for context preservation
+- **Subtitle Sync:** Word-level timestamps from AssemblyAI
+- **Buffering:** Audio queue management for smooth playback
 
-*   More robust error handling and user feedback.
-*   UI/UX improvements (e.g., loading indicators for translation/TTS, better visualizers).
-*   Investigate and optimize for lower latency in all stages.
-*   Option to save/cache generated dubbed audio.
-*   Support for more languages and voices.
-*   Refine audio chunking and resampling for potentially better ASR accuracy.
-*   Securely manage API keys, especially for production deployments.
-*   Consider alternative methods for detecting ASR completion for videos if `SessionTerminated` is not reliably relayed.
+## Key Features Implemented
+
+### Performance Optimizations
+- **Chunked Translation:** Long texts split intelligently by sentences
+- **Audio Queue Management:** Prevents dropped frames during streaming
+- **Debounced Updates:** Reduces unnecessary API calls
+- **Optimized Resampling:** Efficient audio downsampling for ASR
+- **Session Recovery:** Auto-reconnect WebSocket on disconnection
+
+### User Experience
+- **Dark/Light Theme Support:** Automatic theme detection
+- **Responsive Design:** Mobile and desktop optimized
+- **Real-time Feedback:** Audio level visualizers
+- **Progress Indicators:** Processing status for video
+- **Error Recovery:** Graceful handling of API failures
+
+## Known Limitations
+
+- Video files must have compatible audio tracks (MP4 with AAC audio works best)
+- Maximum video file size: 100MB
+- Video duration ideally under 30 seconds for optimal performance
+- Some video formats may require server-side audio extraction
+- Translation quality varies by language pair
+- TTS voice availability depends on target language
+
+## Troubleshooting
+
+### WebSocket Connection Issues
+- Ensure server is running on port 3000
+- Check firewall settings
+- Verify NEXT_PUBLIC_WEBSOCKET_URL in .env.local
+
+### Audio Processing Errors
+- Check browser permissions for microphone
+- Ensure video has audio track
+- Try MP4 format for best compatibility
+
+### Translation Failures
+- Verify API keys are set correctly
+- Check API quota limits
+- Ensure target language is supported
+
+### TTS Issues
+- Confirm Cartesia API key is valid
+- Check voice availability for language
+- Monitor browser console for errors
 
 ---
 

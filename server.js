@@ -140,6 +140,11 @@ app.prepare().then(() => {
           // Queue audio if AssemblyAI is not ready yet
           console.log('[Custom Server ASR] AssemblyAI not ready, queueing audio chunk');
           audioQueue.push(message);
+          // Limit queue size to prevent memory issues
+          if (audioQueue.length > 1000) {
+            console.warn('[Custom Server ASR] Audio queue size exceeded 1000, dropping oldest chunks');
+            audioQueue = audioQueue.slice(-1000);
+          }
         }
       } else if (typeof message === 'string') {
         console.log(`[Custom Server ASR] Received string message: ${message}`);
@@ -147,9 +152,13 @@ app.prepare().then(() => {
           const command = JSON.parse(message);
           if (command.action === 'endStream') {
             console.log('[Custom Server ASR] Client requested to end stream.');
-            // Send session terminated message before closing
-            safeSendToClient({ type: 'SESSION_TERMINATED_BY_SERVER' });
-            safeCloseTranscriber();
+            // Wait a bit before closing to ensure all pending transcripts are sent
+            setTimeout(() => {
+              console.log('[Custom Server ASR] Closing transcriber after delay');
+              // Send session terminated message before closing
+              safeSendToClient({ type: 'SESSION_TERMINATED_BY_SERVER' });
+              safeCloseTranscriber();
+            }, 2000); // 2 second delay before closing
           }
         } catch (e) {
           // Not a JSON command, could be other string data if any was expected

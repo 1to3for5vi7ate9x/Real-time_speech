@@ -90,7 +90,10 @@ export default function Home() {
   const handleTranscript = useCallback((transcript: any) => {
     if (transcript.message_type === "PartialTranscript") {
       setCurrentPartial(transcript.text);
-      if (!selectedVideoFileRef.current && !isProcessingVideoASRRef.current && transcript.text.trim().length >= 5) {
+      // For video processing, we might want to capture partial transcripts too
+      if (isProcessingVideoASRRef.current && selectedVideoFileRef.current && transcript.text) {
+        console.log('[TRANSCRIPT] Partial transcript for video:', transcript.text);
+      } else if (!selectedVideoFileRef.current && !isProcessingVideoASRRef.current && transcript.text.trim().length >= 5) {
         // For live mic input, translate partials
         translateText(transcript.text, selectedLanguageRef.current).catch(console.error);
       }
@@ -241,7 +244,8 @@ export default function Home() {
       const sourceSampleRate = decodedAudioBuffer.sampleRate;
       const targetSampleRate = 16000;
       const resampleRatio = sourceSampleRate / targetSampleRate;
-      const desiredOutputLength = Math.floor(targetSampleRate * 0.250);
+      // Smaller chunks for more frequent updates and better processing
+      const desiredOutputLength = Math.floor(targetSampleRate * 0.100); // 100ms chunks instead of 250ms
       
       let resampleBuffer = new Float32Array(rawPcmData);
       let chunksSent = 0;
@@ -249,7 +253,7 @@ export default function Home() {
       // Wait for session to be ready
       console.log('[VIDEO_PROC] Waiting for ASR session to be ready...');
       let waitTime = 0;
-      while (!isSessionReadyRef.current && waitTime < 10000) { // Wait up to 10 seconds
+      while (!isSessionReadyRef.current && waitTime < 15000) { // Wait up to 15 seconds
         await new Promise(resolve => setTimeout(resolve, 100));
         waitTime += 100;
       }
@@ -282,15 +286,21 @@ export default function Home() {
         chunksSent++;
         
         // Add small delay between chunks to avoid overwhelming the server
-        await new Promise(resolve => setTimeout(resolve, 10));
+        // Reduced delay to send data faster
+        await new Promise(resolve => setTimeout(resolve, 5));
       }
       
-      console.log(`[VIDEO_PROC] Sent ${chunksSent} audio chunks. Ending stream...`);
+      console.log(`[VIDEO_PROC] Sent ${chunksSent} audio chunks. Total audio duration: ~${(chunksSent * 0.25).toFixed(1)}s`);
+      
+      // Don't end stream immediately - wait a bit for any remaining audio to process
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
+      console.log('[VIDEO_PROC] Ending stream...');
       endStream();
       expectingVideoSessionTerminationRef.current = true;
       
-      // Add a small delay after sending all chunks to ensure final transcripts are received
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Add a longer delay after ending stream to ensure all final transcripts are received
+      await new Promise(resolve => setTimeout(resolve, 5000));
       
       // Set a timeout to handle case where server doesn't respond with SessionTerminated
       // Increase timeout to ensure we get the complete transcript
@@ -316,7 +326,7 @@ export default function Home() {
           }
           fullVideoTranscriptRef.current = '';
         }
-      }, 15000); // 15 second timeout to ensure complete transcript
+      }, 20000); // 20 second timeout to ensure complete transcript
       
     } catch (err) {
       console.error('[VIDEO_PROC] Error processing video:', err);
@@ -506,7 +516,7 @@ export default function Home() {
                 Real-Time Speech Translation
               </h1>
               <p className="mt-1 text-xs sm:text-sm text-gray-600 dark:text-gray-400">
-                Video dubbing and live translation powered by AI
+                Video dubbing and live translation powered by Edge AI
               </p>
             </div>
             <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4">
